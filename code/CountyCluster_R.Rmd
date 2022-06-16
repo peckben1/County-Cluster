@@ -1,0 +1,74 @@
+---
+title: "County Cluster R"
+output: html_notebook
+---
+
+This is a rewrite of my County Cluster notebook - originally written in Python in Jupyter Notebook - using R. The code may not be pretty, buy my goal is simply to practice R and demonstrate basic competence. 
+
+Loading the tidyverse
+```{r}
+library(tidyverse)
+library(maps)
+library(mapproj)
+```
+
+Read in datasets
+```{r}
+ed_data <- read_csv("../data/Education.csv", locale = locale(encoding = "Latin1"))
+pop_data <- read_csv("../data/PopulationEstimates.csv", locale = locale(encoding = "Latin1"))
+pov_data <- read_csv("../data/PovertyEstimates.csv", locale = locale(encoding = "Latin1"))
+unm_data <- read_csv("../data/Unemployment.csv", locale = locale(encoding = "Latin1"))
+```
+Taking a look at the education data
+```{r}
+head(ed_data)
+```
+And the ed_data dimensions
+```{r}
+dim(ed_data)
+```
+Now looking at population data - it had a problem when reading in, we'll have to interrogate that more later
+```{r}
+head(pop_data)
+```
+pop_data dimensions
+```{r}
+dim(pop_data)
+```
+And now poverty data
+```{r}
+head(pov_data)
+```
+poverty dimensions
+```{r}
+dim(pov_data)
+```
+And finally, unemployment data
+```{r}
+head(unm_data)
+```
+and unemployment data dimensions
+```{r}
+dim(unm_data)
+```
+A quick look at the summaries of each
+```{r}
+#summary(ed_data)
+```
+```{r}
+#summary(pop_data)
+```
+
+```{r}
+#summary(pov_data)
+```
+
+
+```{r}
+#summary(unm_data)
+```
+So it turns out that while summary() in R returns much the same information as .describe() does in pandas, it does it in a really ungainly format. I don't think I'll be doing that again. I've commented out the summaries to avoid clogging the notebook. 
+At this point in pandas I listed out the data types in each dataframe, but here those have already been displayed on the head(). I also loaded in a shape file with the geometries of the counties, but this was ultimately only used for plotting and the maps package in R already covers US county mapping, so I won't be using the shape file for this. 
+```{r}
+
+```
