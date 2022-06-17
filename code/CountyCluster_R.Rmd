@@ -5,11 +5,14 @@ output: html_notebook
 
 This is a rewrite of my County Cluster notebook - originally written in Python in Jupyter Notebook - using R. The code may not be pretty, buy my goal is simply to practice R and demonstrate basic competence. 
 
-Loading the tidyverse
+Loading packages, setting random seed
 ```{r}
 library(tidyverse)
+library(modelr)
 library(maps)
 library(mapproj)
+library(htmlwidgets)
+set.seed(123)
 ```
 
 Read in datasets
@@ -58,17 +61,258 @@ A quick look at the summaries of each
 ```{r}
 #summary(pop_data)
 ```
-
 ```{r}
 #summary(pov_data)
 ```
-
-
 ```{r}
 #summary(unm_data)
 ```
 So it turns out that while summary() in R returns much the same information as .describe() does in pandas, it does it in a really ungainly format. I don't think I'll be doing that again. I've commented out the summaries to avoid clogging the notebook. 
 At this point in pandas I listed out the data types in each dataframe, but here those have already been displayed on the head(). I also loaded in a shape file with the geometries of the counties, but this was ultimately only used for plotting and the maps package in R already covers US county mapping, so I won't be using the shape file for this. 
-```{r}
 
+First, a tiny bit of housekeeping - making all the FIPS columns called just "FIPS".
+```{r}
+ed_data <- rename(ed_data, FIPS = "FIPS Code")
+pov_data <- rename(pov_data, FIPS = FIPStxt)
 ```
+
+Before joining, need to check that FIPS are actually unique
+```{r}
+dim(distinct(select(ed_data, FIPS)))[1] == dim(ed_data)[1]
+```
+```{r}
+dim(distinct(select(pop_data, FIPS)))[1] == dim(pop_data)[1]
+```
+```{r}
+dim(distinct(select(pov_data, FIPS)))[1] == dim(pov_data)[1]
+```
+```{r}
+dim(distinct(select(unm_data, FIPS)))[1] == dim(unm_data)[1]
+```
+All good on that front. Of the four dataframes, three read in FIPS as dbl while pop_data read it in as chr. While the latter is more technically correct, I'll convert pop_data FIPS to dbl so all four are on the same page when it comes to leading zeros and data types. 
+```{r}
+(pop_data <- mutate(pop_data, across(FIPS, as.double)))
+```
+And now to join them all on FIPS. And yes, the name of big_data is tongue-in-cheek.
+```{r}
+big_data <- ed_data %>%
+  full_join(pop_data, by = c("FIPS")) %>%
+  full_join(pov_data, by = c("FIPS")) %>%
+  full_join(unm_data, by = c("FIPS"))
+```
+Let's take a look at the result
+```{r}
+head(big_data)
+```
+```{r}
+dim(big_data)
+```
+and now let's see how many nulls there are
+```{r}
+sort(colSums(is.na(big_data)))
+```
+All columns have at least one null (I suspect this is due to the parsing problem from pop_data), a large number have <20, another significant group have 50-100, and a handful have 140-150 or outright majority nulls. On closer inspection, the outright majority null columns are state-level data which is not necessary for my analysis. Many of the other nulls may be the result of state-levels rows.
+Before anything else, I'll save a copy of the full data
+```{r}
+write_csv(big_data, "../data/outer_join_R.csv")
+```
+And now to clean it up. First to take out the mostly null columns
+```{r}
+(big_data <- select(big_data, -c(POV04_2018, CI90LB04_2018, CI90UB04_2018, PCTPOV04_2018, CI90LB04P_2018, CI90UB04P_2018)))
+```
+Now the number of rows with nulls is much more reasonable
+```{r}
+sum(!complete.cases(big_data))
+```
+Let's see if my suspicion there's a fully null row is correct
+```{r}
+filter(big_data, apply(is.na(big_data), 1, all))
+```
+Getting rid of the fully null row
+```{r}
+big_data <- filter(big_data, !apply(is.na(big_data), 1, all))
+```
+Now let's look at the remaining rows with at least one null
+```{r}
+filter(big_data, apply(is.na(big_data), 1, any))
+```
+That's mostly Puerto Rico and Alaska, as well as the summary rows for states and the entire country. 
+Here's the rows with at least one null which DON'T meet any of the criteria I just listed.
+```{r}
+filter(big_data, apply(is.na(big_data), 1, any) & !(State.x %in% c("AK", "PR")) & (FIPS %% 1000 != 0))
+```
+At this point in the original pandas notebook I broke to review external research to better understand what was going on with these counties (and county equivalents). I decided to narrow down to just columns I thought I might actually use before cleaning further, as the time component complicated cleaning some counties pretty severely. 
+```{r}
+(big_slice <- select(big_data, FIPS, State.x, "Area name", '2013 Rural-urban Continuum Code', '2013 Urban Influence Code', "Percent of adults with less than a high school diploma, 2014-18", 'Percent of adults with a high school diploma only, 2014-18', "Percent of adults completing some college or associate's degree, 2014-18", "Percent of adults with a bachelor's degree or higher, 2014-18", 'Economic_typology_2015', 'POP_ESTIMATE_2010', 'POP_ESTIMATE_2018', 'R_NATURAL_INC_2018', 'R_NET_MIG_2018', 'PCTPOVALL_2018', 'Unemployment_rate_2010', 'Unemployment_rate_2018', 'Median_Household_Income_2018'))
+    
+```
+Now I'll get rid of Alaska, Hawaii, Puerto Rico, and the summary rows
+```{r}
+(big_slice <- filter(big_slice, !(State.x %in% c("AK", "PR", "HI")) & (FIPS %% 1000 != 0)))
+```
+Now let's see what nulls remain
+```{r}
+filter(big_slice, apply(is.na(big_slice), 1, any))
+```
+Based on external research, I think I can drop all three of these without losing much
+```{r}
+(big_slice <- drop_na(big_slice))
+```
+Now to finish the cleaning. I'll make FIPS an int in R instead of a chr for mapping reasons which will come up later
+```{r}
+(big_slice <- mutate(big_slice, across(FIPS, as.integer)))
+```
+The Rural-urban codes should be ints as well
+```{r}
+(big_slice <- mutate(big_slice, across("2013 Rural-urban Continuum Code":"2013 Urban Influence Code", as.integer)))
+```
+Economic typology should really be a chr
+```{r}
+(big_slice <- mutate(big_slice, across(Economic_typology_2015, as.character)))
+```
+Population estimates are currently doubles but should be integers
+```{r}
+(big_slice <- mutate(big_slice, across(POP_ESTIMATE_2010:POP_ESTIMATE_2018, as.integer)))
+```
+And last but not least for type changes, median household income is currently a chr with dollar signs and thousand separators, neither of which we want
+```{r}
+big_slice$Median_Household_Income_2018 <- str_replace_all(big_slice$Median_Household_Income_2018, "[[:punct:]/$]", "")
+```
+```{r}
+(big_slice <- mutate(big_slice, across(Median_Household_Income_2018, as.integer)))
+```
+Much better. Now I can create some new variables
+```{r}
+(big_slice <- mutate(big_slice,
+  Unemployment_change = Unemployment_rate_2018 - Unemployment_rate_2010,
+  Population_percent_change = (POP_ESTIMATE_2018 - POP_ESTIMATE_2010) / POP_ESTIMATE_2010
+))
+```
+And also one-hot-encode the Economic Typology
+```{r}
+big_slice %>% 
+  mutate(ones = 1) %>% 
+  pivot_wider(
+  names_from = Economic_typology_2015,
+  values_from = ones,
+  names_prefix = "Econ_Typology_",
+  names_sort = TRUE,
+  values_fill = 0,
+  values_fn = as.integer)
+```
+Saving a copy of the modeling-ready data
+```{r}
+write_csv(big_slice, "../data/processed_R.csv")
+```
+Let's specify the X and y to use for modeling - more features may be used later
+```{r}
+(X <- select(big_slice, 6, 13, 14, 17, 18, 19, 20))
+y <- big_slice$PCTPOVALL_2018
+```
+Train test split
+```{r}
+train_len <- as.integer(0.75 * dim(X)[1])
+train_test_split <- sample(c(rep(0, train_len), rep(1, dim(X)[1] - train_len)))
+X_train <- X[train_test_split == 0, ]
+X_test <- X[train_test_split == 1, ]
+y_train <- y[train_test_split == 0]
+y_test <- y[train_test_split == 1]
+```
+Scaling the data
+```{r}
+X_train_sc <- scale(X_train)
+```
+Can we get that scale back?
+```{r}
+train_scale <- attributes(X_train_sc)$`scaled:scale`
+train_centers <- attributes(X_train_sc)$`scaled:center`
+```
+And now to apply that to X_test
+```{r}
+X_test_sc <- as_tibble(scale(X_test, center = train_centers, scale = train_scale))
+X_sc <- as_tibble(scale(X, center = train_centers, scale = train_scale))
+X_train_sc <- as_tibble(X_train_sc)
+```
+Now a linear model
+```{r}
+linreg <- lm(y_train ~ Unemployment_rate_2018 + `Percent of adults with less than a high school diploma, 2014-18` + R_NATURAL_INC_2018 + R_NET_MIG_2018 + Median_Household_Income_2018 + Unemployment_change + Population_percent_change, data = X_train_sc)
+```
+Looking at the model summary - note that the R2 isn't great, but not bad at all
+```{r}
+summary(linreg)
+```
+And the sorted coefs. NB: I didn't sort by absolute value here, so they aren't in order of magnitude of effect.
+```{r}
+sort(coef(linreg))
+```
+How does it perform on the test set? Manually calculating Adj. R2 on test set
+```{r}
+1 - (sum((y_test - add_predictions(X_test_sc, linreg)$pred)^2) / (dim(X_test_sc)[1] - dim(X_test_sc)[2] - 1)) / (sum((y_test - mean(y_test))^2) / (dim(X_test_sc)[1] - 1))
+```
+Now to get predictions on the entire scaled dataset (for mapping)
+```{r}
+X_sc <- add_predictions(X_sc, linreg)
+```
+Mapping the error
+```{r}
+palette(rainbow(50, start = 0, end = 0.3, rev = TRUE))
+offset <- abs(min(X_sc$pred))
+regions <- inner_join(county.fips, mutate(big_slice, pred = X_sc$pred), by = c("fips" = "FIPS"))
+map('county', region = regions$polyname, exact=TRUE, fill = TRUE, col = (regions$pred + offset), lwd = 0.2)
+```
+FIPS code 46102 refers to Oglala Lakota County, which doesn't appear in this fips directory due to a name change from Shannon County in 2014 which also changed the FIPS code. 
+```{r}
+filter(county.fips, polyname == "south dakota,shannon" | fips == 46102)
+```
+
+Plotting the predictions against actual to visually evaluate the model. I'd love to use a diverging palette centered on 0 here, but I'm moving on for the sake of time. 
+```{r}
+ggplot(data = X_sc) + 
+  geom_point(mapping = aes(x = y, y = pred, color = (y - pred)))
+```
+Now let's look at a model accounting for interactions
+```{r}
+linreg2 <- lm(y_train ~ Unemployment_rate_2018 * `Percent of adults with less than a high school diploma, 2014-18` * R_NATURAL_INC_2018 * R_NET_MIG_2018 * Median_Household_Income_2018 * Unemployment_change * Population_percent_change, data = X_train_sc)
+#summary(linreg2)
+```
+So that summary ended up being kind of huge, but hey! Significantly higher R^2 values and still a ridiculously small p-value. Good stuff. Summary commented out for cleanliness.
+Mapping the error for this one - still need to get better at working with palettes to have this be on the same scale as the previous map. 
+```{r}
+regions2 <- inner_join(county.fips, mutate(big_slice, pred = add_predictions(X_sc, linreg2)$pred), by = c("fips" = "FIPS"))
+offset2 <- abs(min(regions$pred))
+map('county', region = regions2$polyname, exact=TRUE, fill = TRUE, col = (regions$pred + offset2), lwd = 0.2)
+```
+And the test R^2 for linreg2
+```{r}
+1 - (sum((y_test - add_predictions(X_test_sc, linreg2)$pred)^2) / (dim(X_test_sc)[1] - dim(X_test_sc)[2] - 1)) / (sum((y_test - mean(y_test))^2) / (dim(X_test_sc)[1] - 1))
+```
+Testing R^2 has improved as well, though not by as much, which is to be expected. Plotting the predicted against actual again for the interaction mode. Same caveat with the color palette as the similar plot above.
+```{r}
+ggplot(data = add_predictions(X_sc, linreg2)) + 
+  geom_point(mapping = aes(x = y, y = pred, color = (y - pred)))
+```
+And plotting error against actual
+```{r}
+ggplot(data = add_predictions(X_sc, linreg2)) + 
+  geom_point(alpha = 0.2, mapping = aes(x = y, y = (y - pred))) + 
+  geom_ref_line(h = 0, colour = "red")
+```
+The errors visibly curve upwards at higher values. 
+Investigating some of the worst errors. Still getting the hang of pipes. 
+```{r}
+big_slice %>% mutate( ErrorPoly = add_predictions(X_sc, linreg2)$pred - y) %>% arrange(desc(ErrorPoly))
+```
+Worth noting that if I did this correctly (not an insignificant "if") my highest errors are quite different than the original Python ones. Strange and worth looking into. 
+
+Now the main event - Kmeans! Using the Lloyd algorithm to match with the version I created in sklearn. 
+```{r}
+(clustering <- kmeans(select(X_sc, !pred), centers = 8, iter.max = 1000, nstart = 100, algorithm = "Lloyd"))
+```
+Checking the attributes
+```{r}
+attributes(clustering)
+```
+```{r}
+attributes(clustering)$centers
+```
+I am still confused by attributes in R...
